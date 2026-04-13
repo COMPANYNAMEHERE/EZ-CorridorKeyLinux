@@ -599,10 +599,10 @@ class SetupWizard(QDialog):
             if not getattr(sys, "frozen", False):
                 return
             desktop = Path.home() / "Desktop"
-            if not desktop.is_dir():
-                return
 
             if sys.platform == "darwin":
+                if not desktop.is_dir():
+                    return
                 # macOS: create a symlink to the .app on the Desktop
                 app_path = Path(sys.executable).resolve().parent.parent.parent
                 link = desktop / app_path.name
@@ -629,6 +629,75 @@ class SetupWizard(QDialog):
                     capture_output=True, timeout=10,
                 )
                 logger.info("Desktop shortcut created: %s", lnk)
+            elif sys.platform.startswith("linux"):
+                icon_path = Path(sys._MEIPASS) / "ui" / "theme" / "corridorkey.png"
+                if not icon_path.is_file():
+                    logger.warning("Launcher icon not found: %s", icon_path)
+
+                def _can_write_dir(path: Path) -> bool:
+                    return path.is_dir() and os.access(path, os.W_OK | os.X_OK)
+
+                def _write_desktop_file(
+                    target_dir: Path,
+                    filename: str,
+                    create_if_missing: bool = False,
+                ) -> bool:
+                    if create_if_missing and not target_dir.exists():
+                        try:
+                            target_dir.mkdir(parents=True, exist_ok=True)
+                        except Exception:
+                            logger.info("Failed to create launcher directory: %s", target_dir)
+                            return False
+                    if not _can_write_dir(target_dir):
+                        logger.info(
+                            "Skipping launcher write: directory missing or not writable: %s",
+                            target_dir,
+                        )
+                        return False
+
+                    launcher_path = target_dir / filename
+                    launcher = "\n".join(
+                        [
+                            "[Desktop Entry]",
+                            "Version=1.0",
+                            "Type=Application",
+                            "Name=CorridorKey",
+                            "Comment=CorridorKey - AI Green Screen",
+                            f"Exec=\"{sys.executable}\"",
+                            f"Icon={icon_path}",
+                            "Terminal=false",
+                            "Categories=Video;Graphics;",
+                            "StartupNotify=true",
+                            "",
+                        ]
+                    )
+                    launcher_path.write_text(launcher, encoding="utf-8")
+                    launcher_path.chmod(0o755)
+                    logger.info("Desktop launcher created: %s", launcher_path)
+                    return True
+
+                desktop_written = False
+                if desktop.is_dir():
+                    desktop_written = _write_desktop_file(desktop, "CorridorKey.desktop")
+                else:
+                    logger.info(
+                        "Desktop directory not found at %s; "
+                        "desktop environment may use non-standard paths.",
+                        desktop,
+                    )
+
+                applications_dir = Path.home() / ".local" / "share" / "applications"
+                applications_written = _write_desktop_file(
+                    applications_dir,
+                    "CorridorKey.desktop",
+                    create_if_missing=True,
+                )
+
+                if not desktop_written and not applications_written:
+                    logger.warning(
+                        "No Linux launcher written. "
+                        "Desktop environment conventions may differ from this system."
+                    )
         except Exception as e:
             logger.warning("Failed to create desktop shortcut: %s", e)
 
