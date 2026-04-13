@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import sys
+from pathlib import Path
 
 from PySide6.QtWidgets import QWidget, QLabel, QMessageBox
 from PySide6.QtCore import Qt, Slot, QSettings
@@ -25,6 +26,12 @@ _SHOW_TESTER_BUILD_ID = False
 
 class SettingsMixin:
     """Layout, preferences, about dialog, and update methods for MainWindow."""
+
+    @staticmethod
+    def _get_app_root() -> Path:
+        """Return the repository/app root directory."""
+        # settings_mixin.py lives at: <root>/ui/main_window_mixins/settings_mixin.py
+        return Path(__file__).resolve().parents[2]
 
     def _reset_layout(self) -> None:
         self._splitter.setSizes([920, 280])
@@ -173,9 +180,7 @@ class SettingsMixin:
         candidates = []
         if getattr(sys, 'frozen', False):
             candidates.append(os.path.join(sys._MEIPASS, "pyproject.toml"))
-        candidates.append(
-            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "pyproject.toml")
-        )
+        candidates.append(str(self._get_app_root() / "pyproject.toml"))
         for path in candidates:
             try:
                 with open(path, "rb") as f:
@@ -188,10 +193,9 @@ class SettingsMixin:
         try:
             import subprocess
 
-            repo_root = os.path.dirname(os.path.dirname(__file__))
             result = subprocess.run(
                 ["git", "rev-parse", "--short", "HEAD"],
-                cwd=repo_root,
+                cwd=str(self._get_app_root()),
                 capture_output=True,
                 text=True,
                 check=True,
@@ -248,17 +252,36 @@ class SettingsMixin:
             return
         self._auto_save_session()
         import subprocess
-        root = os.path.dirname(os.path.dirname(__file__))
+
+        root = self._get_app_root()
         if os.name == "nt":
-            bat = os.path.join(root, "3-update.bat")
+            script_path = root / "3-update.bat"
+            if not script_path.exists():
+                QMessageBox.warning(
+                    self,
+                    "Update Error",
+                    "Could not find update script:\n"
+                    f"{script_path}\n\n"
+                    "Update aborted."
+                )
+                return
             subprocess.Popen(
-                ["cmd", "/c", "start", "", bat, "--relaunch"],
+                ["cmd", "/c", "start", "", str(script_path), "--relaunch"],
                 creationflags=subprocess.CREATE_NEW_CONSOLE,
             )
         else:
-            sh = os.path.join(root, "3-update.sh")
+            script_path = root / "3-update.sh"
+            if not script_path.exists():
+                QMessageBox.warning(
+                    self,
+                    "Update Error",
+                    "Could not find update script:\n"
+                    f"{script_path}\n\n"
+                    "Update aborted."
+                )
+                return
             subprocess.Popen(
-                [sh, "--relaunch"],
+                [str(script_path), "--relaunch"],
                 start_new_session=True,
             )
         from PySide6.QtWidgets import QApplication
