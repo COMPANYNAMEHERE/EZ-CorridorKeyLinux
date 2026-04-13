@@ -3,6 +3,7 @@ import sys
 import argparse
 import logging
 import glob
+import json
 
 # Enable OpenEXR Support (Must be before cv2 import)
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
@@ -23,10 +24,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CLIPS_DIR = os.path.join(BASE_DIR, "ClipsForInference")
 OUTPUT_DIR = os.path.join(BASE_DIR, "Output")
 
-# Network Mapping
-# Windows Drive -> Linux Mount Point
-WIN_DRIVE_ROOT = "V:\\"
-LINUX_MOUNT_ROOT = "/mnt/ssd-storage"
+# Network Mapping (default fallback when no explicit map config is provided)
+DEFAULT_PATH_MAPPINGS = [("V:\\", "/mnt/ssd-storage")]
+PATH_MAPPINGS = list(DEFAULT_PATH_MAPPINGS)
 
 # --- Helpers ---
 def is_image_file(filename):
@@ -35,25 +35,94 @@ def is_image_file(filename):
 def is_video_file(filename):
     return filename.lower().endswith(('.mp4', '.mov', '.avi', '.mkv'))
 
-def map_path(win_path):
+def is_windows_path(path_value):
+    return len(path_value) >= 2 and path_value[1] == ':' and path_value[0].isalpha()
+
+def parse_path_map_entry(entry):
+    if '=' not in entry:
+        raise ValueError(f"Invalid path map '{entry}'. Expected WIN_PREFIX=LINUX_PREFIX.")
+
+    win_prefix, linux_prefix = entry.split('=', 1)
+    win_prefix = win_prefix.strip()
+    linux_prefix = linux_prefix.strip()
+
+    if not win_prefix:
+        raise ValueError(f"Invalid path map '{entry}': Windows prefix is empty.")
+    if not linux_prefix:
+        raise ValueError(f"Invalid path map '{entry}': Linux prefix is empty.")
+
+    return win_prefix, linux_prefix
+
+def normalize_windows_path(path_value):
+    return path_value.replace('/', '\\')
+
+def resolve_path_mappings(cli_path_maps=None, config_path=None):
+    explicit_entries = []
+
+    env_maps_raw = os.getenv("CLIP_MANAGER_PATH_MAP")
+    if env_maps_raw:
+        explicit_entries.extend([e.strip() for e in env_maps_raw.split(';') if e.strip()])
+
+    if config_path:
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+            cfg_maps = cfg.get('path_mappings', [])
+            if not isinstance(cfg_maps, list):
+                raise ValueError("'path_mappings' must be a list in config file.")
+            explicit_entries.extend(cfg_maps)
+        except Exception as e:
+            raise ValueError(f"Failed to load path mapping config '{config_path}': {e}")
+
+    if cli_path_maps:
+        explicit_entries.extend(cli_path_maps)
+
+    if not explicit_entries:
+        return list(DEFAULT_PATH_MAPPINGS)
+
+    mappings = []
+    for entry in explicit_entries:
+        mappings.append(parse_path_map_entry(entry))
+    return mappings
+
+def map_path(input_path, path_mappings=None):
     r"""
-    Converts a Windows path (example: V:\Projects\Shot1) to the local Linux path.
+    Maps incoming path strings using configured path mappings.
+
+    - Native POSIX paths are returned as-is.
+    - Windows path normalization/mapping is only attempted when mapping rules exist.
+    - Unmapped Windows paths raise a ValueError with a clear message.
     """
-    # Normalize slashes
-    win_path = win_path.strip()
-    
-    # Check if it starts with the drive letter
-    if win_path.upper().startswith(WIN_DRIVE_ROOT.upper()):
-        # Remove drive letter
-        rel_path = win_path[len(WIN_DRIVE_ROOT):]
-        # Flip slashes
-        rel_path = rel_path.replace('\\', '/')
-        # Combine
-        linux_path = os.path.join(LINUX_MOUNT_ROOT, rel_path)
-        return linux_path
-    
-    # If not on V:, maybe it's already a linux path or invalid?
-    return win_path
+    candidate = input_path.strip()
+
+    # Native Linux/Posix paths pass straight through.
+    if candidate.startswith('/'):
+        return candidate
+
+    mappings = PATH_MAPPINGS if path_mappings is None else path_mappings
+
+    # If there are no mappings configured, do not try to normalize Windows paths.
+    if not mappings:
+        return candidate
+
+    if is_windows_path(candidate):
+        normalized = normalize_windows_path(candidate)
+        normalized_upper = normalized.upper()
+
+        for win_prefix, linux_prefix in mappings:
+            win_prefix_normalized = normalize_windows_path(win_prefix)
+            if normalized_upper.startswith(win_prefix_normalized.upper()):
+                rel_path = normalized[len(win_prefix_normalized):].lstrip('\\')
+                rel_path = rel_path.replace('\\', '/')
+                return os.path.join(linux_prefix, rel_path)
+
+        configured = ', '.join([f"{w}={l}" for w, l in mappings])
+        raise ValueError(
+            f"Unmapped Windows path '{input_path}'. Configure --path-map WIN_PREFIX=LINUX_PREFIX "
+            f"(or CLIP_MANAGER_PATH_MAP / --path-map-config). Current mappings: {configured}"
+        )
+
+    return candidate
 
 # --- Classes ---
 class ClipAsset:
@@ -813,13 +882,17 @@ def organize_clips(clips_dir):
         if os.path.isdir(full_path) and entry not in ["IgnoredClips", "Output"]:
             organize_target(full_path)
 
-def interactive_wizard(win_path):
+def interactive_wizard(win_path, path_mappings=None):
     print("\n" + "="*60)
     print(" CORRIDOR KEY - SMART WIZARD")
     print("="*60)
     
     # 1. Map Path
-    linux_path = map_path(win_path)
+    try:
+        linux_path = map_path(win_path, path_mappings=path_mappings)
+    except ValueError as e:
+        print(f"\n[ERROR] {e}")
+        return
     print(f"Windows Path: {win_path}")
     print(f"Linux Path:   {linux_path}")
     
@@ -1075,9 +1148,26 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CorridorKey Clip Manager")
     parser.add_argument("--action", choices=['generate_alphas', 'run_inference', 'list', 'wizard'], required=True)
     parser.add_argument("--win_path", help=r"Windows Path (example: V:\...) for Wizard Mode", default=None)
-    
+    parser.add_argument(
+        "--path-map",
+        action="append",
+        default=None,
+        help="Path mapping rule in the format WIN_PREFIX=LINUX_PREFIX. Can be repeated.",
+    )
+    parser.add_argument(
+        "--path-map-config",
+        default=os.getenv("CLIP_MANAGER_CONFIG", None),
+        help="Optional JSON config path containing {'path_mappings': ['WIN_PREFIX=LINUX_PREFIX', ...]}",
+    )
+
     args = parser.parse_args()
-    
+
+    try:
+        PATH_MAPPINGS = resolve_path_mappings(args.path_map, args.path_map_config)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(2)
+
     if args.action == 'list':
         scan_clips()
     elif args.action == 'generate_alphas':
@@ -1090,4 +1180,4 @@ if __name__ == "__main__":
         if not args.win_path:
             print("Error: --win_path required for wizard.")
         else:
-            interactive_wizard(args.win_path)
+            interactive_wizard(args.win_path, path_mappings=PATH_MAPPINGS)
