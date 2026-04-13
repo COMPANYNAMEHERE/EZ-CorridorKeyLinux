@@ -1,4 +1,6 @@
 """Typed exceptions for the CorridorKey backend."""
+import os
+import sys
 
 
 class CorridorKeyError(Exception):
@@ -120,10 +122,24 @@ class FFmpegNotFoundError(CorridorKeyError):
     """Raised when FFmpeg/FFprobe binaries cannot be located."""
 
     def __init__(self):
-        super().__init__(
-            "FFmpeg not found. Install FFmpeg and ensure it is on PATH, "
-            "or place it in C:\\Program Files\\ffmpeg\\bin\\"
-        )
+        if os.name == "nt":
+            message = (
+                "FFmpeg not found. Install FFmpeg and ensure it is on PATH, "
+                "or place it in C:\\Program Files\\ffmpeg\\bin\\"
+            )
+        elif sys.platform == "darwin":
+            message = (
+                "FFmpeg not found. Install with Homebrew (`brew install ffmpeg`) "
+                "and ensure `ffmpeg` and `ffprobe` are on PATH."
+            )
+        else:
+            message = (
+                "FFmpeg not found. Install FFmpeg/FFprobe with your package manager "
+                "(for example: `sudo apt install ffmpeg`, `sudo dnf install ffmpeg "
+                "ffmpeg-libs`, or `sudo pacman -S ffmpeg`) and ensure the binaries "
+                "are on PATH."
+            )
+        super().__init__(message)
 
 
 class ExtractionError(CorridorKeyError):

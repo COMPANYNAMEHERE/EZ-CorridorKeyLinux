@@ -8,10 +8,68 @@ these results live in ``diagnostic_dialog.py``.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import sys
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
+
+def _runtime_platform() -> str:
+    """Return normalized runtime platform key."""
+    if os.name == "nt":
+        return "windows"
+    if sys.platform == "darwin":
+        return "macos"
+    return "linux"
+
+
+def build_venv_activation_step(platform: str) -> str:
+    """Return a platform-appropriate virtualenv activation step."""
+    if platform == "windows":
+        return "Activate the virtual environment:\n    .venv\\Scripts\\activate"
+    return "Activate the virtual environment:\n    source .venv/bin/activate"
+
+
+def build_ffmpeg_install_steps(platform: str) -> list[str]:
+    """Return platform-specific FFmpeg installation guidance steps."""
+    if platform == "windows":
+        return [
+            "Go to Edit > Preferences > Repair FFmpeg.\n"
+            "This will automatically download and install FFmpeg for you.",
+            "If that doesn't work, re-run 1-install.bat.",
+        ]
+    if platform == "macos":
+        return [
+            "Go to Edit > Preferences > Repair FFmpeg.\n"
+            "This will automatically download and install FFmpeg for you.",
+            "If that doesn't work, install via Homebrew:\n"
+            "    brew install ffmpeg",
+        ]
+    return [
+        "Go to Edit > Preferences > Repair FFmpeg.\n"
+        "This will automatically download and install FFmpeg for you.",
+        "If that doesn't work, install FFmpeg and FFprobe with your package manager, for example:\n"
+        "    sudo apt install ffmpeg\n"
+        "    sudo dnf install ffmpeg ffmpeg-libs\n"
+        "    sudo pacman -S ffmpeg",
+    ]
+
+
+def build_pytorch_cuda_reinstall_steps(platform: str) -> list[str]:
+    """Shared CUDA PyTorch reinstall steps."""
+    return [
+        "Open a terminal in the EZ-CorridorKey folder.",
+        build_venv_activation_step(platform),
+        "Reinstall PyTorch with CUDA:\n"
+        "    pip install torch torchvision --index-url\n"
+        "    https://download.pytorch.org/whl/cu128",
+        "Restart EZ-CorridorKey.",
+    ]
+
+
+_PLATFORM = _runtime_platform()
 
 
 # ── Known error patterns ─────────────────────────────────────────────
@@ -45,13 +103,7 @@ _DIAGNOSTICS: list[Diagnostic] = [
             "PyTorch was installed separately without the CUDA index."
         ),
         steps=[
-            "Open a terminal in the EZ-CorridorKey folder.",
-            "Activate the virtual environment:\n"
-            "    .venv\\Scripts\\activate",
-            "Reinstall PyTorch with CUDA:\n"
-            "    pip install torch torchvision --index-url\n"
-            "    https://download.pytorch.org/whl/cu128",
-            "Restart EZ-CorridorKey.",
+            *build_pytorch_cuda_reinstall_steps(_PLATFORM),
             "If you don't have an NVIDIA GPU, GVM and VideoMaMa\n"
             "are not supported — use manual alpha hints instead.",
         ],
@@ -99,12 +151,7 @@ _DIAGNOSTICS: list[Diagnostic] = [
             "FFmpeg 7.0+ plus FFprobe."
         ),
         steps=[
-            "Go to Edit > Preferences > Repair FFmpeg.\n"
-            "This will automatically download a compatible FFmpeg build.",
-            "If that doesn't work:\n"
-            "  Windows: re-run 1-install.bat.\n"
-            "  macOS: brew install ffmpeg\n"
-            "  Linux: install both ffmpeg and ffprobe from your package manager (version 7.0+).",
+            *build_ffmpeg_install_steps(_PLATFORM),
             "Verify both commands work:\n"
             "    ffmpeg -version\n"
             "    ffprobe -version",
@@ -125,12 +172,7 @@ _DIAGNOSTICS: list[Diagnostic] = [
             "not found on your system."
         ),
         steps=[
-            "Go to Edit > Preferences > Repair FFmpeg.\n"
-            "This will automatically download and install FFmpeg for you.",
-            "If that doesn't work:\n"
-            "  Windows: re-run 1-install.bat.\n"
-            "  macOS: brew install ffmpeg\n"
-            "  Linux: install ffmpeg from your package manager.",
+            *build_ffmpeg_install_steps(_PLATFORM),
             "Restart EZ-CorridorKey.",
         ],
         tags=["ffmpeg", "video"],
@@ -151,8 +193,7 @@ _DIAGNOSTICS: list[Diagnostic] = [
         ),
         steps=[
             "Open a terminal in the EZ-CorridorKey folder.",
-            "Activate the virtual environment:\n"
-            "    .venv\\Scripts\\activate",
+            build_venv_activation_step(_PLATFORM),
             "Install triton-windows:\n"
             "    pip install triton-windows",
             "Restart EZ-CorridorKey.",
@@ -198,15 +239,15 @@ _DIAGNOSTICS: list[Diagnostic] = [
         ),
         steps=[
             "Open a terminal in the EZ-CorridorKey folder.",
-            "Activate the virtual environment:\n"
-            "    .venv\\Scripts\\activate  (or venv\\Scripts\\activate)",
+            build_venv_activation_step(_PLATFORM),
             "Uninstall the CPU-only build:\n"
             "    pip uninstall torch torchvision -y",
             "Reinstall with CUDA support:\n"
             "    pip install torch torchvision --index-url\n"
             "    https://download.pytorch.org/whl/cu128",
             "Restart EZ-CorridorKey.",
-            "Tip: re-running 1-install.bat will also fix this automatically.",
+            "Tip: re-running the installer script (1-install.bat on Windows, "
+            "1-install.sh on macOS/Linux) will also fix this automatically.",
         ],
         tags=["gpu", "cuda", "cpu", "wheel"],
     ),
@@ -302,7 +343,9 @@ _DIAGNOSTICS: list[Diagnostic] = [
             "browser hardware acceleration).",
             "Try processing at a lower resolution first.",
             "Set the environment variable for low-VRAM mode:\n"
-            "    set CORRIDORKEY_OPT_MODE=lowvram",
+            "    set CORRIDORKEY_OPT_MODE=lowvram"
+            if _PLATFORM == "windows"
+            else "    export CORRIDORKEY_OPT_MODE=lowvram",
             "If the problem persists, your GPU may not have enough\n"
             "VRAM for this clip resolution.",
         ],
@@ -369,7 +412,6 @@ def run_startup_diagnostics(device: str) -> list[StartupIssue]:
             pass
 
     # 2. Python version outside supported range
-    import sys
     vi = sys.version_info
     if vi.major != 3 or vi.minor < 10 or vi.minor > 13:
         diag = next((d for d in _DIAGNOSTICS if d.id == "python-version"), None)
